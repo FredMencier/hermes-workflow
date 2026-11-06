@@ -2,142 +2,183 @@
 
 ## 1. Vue d'ensemble
 
-Ce workflow orchestre une boucle de développement automatisée autour d'une issue GitHub :
+Ce workflow orchestre une boucle de développement automatisée autour d'une issue GitHub. Il est écrit avec la syntaxe `hermes-workflows` : chaque nœud déclare ses dépendances (`after`), les sorties des autres nœuds qu'il lit (`inputs`), une condition d'exécution (`when`) et un schéma de sortie JSON (`schema`). Il n'y a plus de nœuds `gate` ni `join` : les décisions sont portées par les champs `when` et par les nœuds `bilan_*`.
 
-1. un agent récupère une issue ouverte et détecte le langage du projet ;
-2. un agent **Coder** écrit le correctif et ouvre une Pull Request ;
-3. un agent **Reviewer** relit le diff, puis une **Gate** décide d'approuver ou de rejeter ;
-4. en cas d'approbation, un agent **QA** lance les tests, validés par une seconde Gate ;
-5. si tout est vert, une notification Telegram est envoyée et l'issue est archivée.
+Déroulement :
 
-Tout rejet (review ou QA) renvoie la PR au Coder pour une nouvelle itération.
+1. `fetch` récupère la plus ancienne issue ouverte portant le label `hermes`, la marque `hermes-en-cours` et détecte le langage ;
+2. `coder_1` écrit le correctif et ouvre une Pull Request ;
+3. `review_1` relit la PR ; si elle est approuvée, `qa_1` lance la QA ;
+4. `bilan_1` synthétise le tour et rend un statut `ok`, `retry` ou `escalade` ;
+5. sur `retry`, `reject_1` poste les motifs sur la PR et `coder_2` corrige sur la même branche, puis le cycle recommence (tour 2, puis tour 3) ;
+6. `statut` détermine le statut final à partir du dernier bilan ;
+7. si le statut est `pret`, `wait_merge` attend la fusion par un humain, puis `telegram_notification` et `archive` terminent le flux ;
+8. si le statut est `escalade` (ou si la PR n'est pas fusionnée), un nœud d'escalade remet la PR en brouillon et prévient un humain.
 
-Les prompts système des agents Coder et Reviewer sont chargés selon la variable `{{langage_detecte}}` :
+Le workflow traite **une seule issue** par exécution et **s'arrête après 3 tours** au maximum.
 
-| Langage | Prompt Coder | Prompt Reviewer |
-|---|---|---|
-| Java | `java-agent-coder-system-prompt.md` | `java-agent-reviewer-system-prompt.md` |
-| TypeScript | `typescript-agent-coder-system-prompt.md` | `typescript-agent-reviewer-system-prompt.md` |
-| Autre | persona adapté dynamiquement (pas de prompt dédié) | persona adapté dynamiquement |
+Les prompts système sont chargés selon `langage_detecte` :
+
+| Langage | Prompt Coder | Prompt Reviewer | Prompt QA |
+|---|---|---|---|
+| `Java` | `java-agent-coder-system-prompt.md` | `java-agent-reviewer-system-prompt.md` | `agent-qa-system-prompt.md` |
+| `Typescript` | `typescript-agent-coder-system-prompt.md` | `typescript-agent-reviewer-system-prompt.md` | `agent-qa-system-prompt.md` |
+| Autre ou vide | prompt TypeScript Senior (par défaut) | prompt TypeScript Senior (par défaut) | `agent-qa-system-prompt.md` |
 
 ## 2. Diagramme
 
-> Le diagramme est au format [Mermaid](https://mermaid.js.org/). Il s'affiche directement sur GitHub, dans VS Code (extension Markdown Preview Mermaid) et dans la plupart des visionneuses Markdown.
+> Le diagramme est au format [Mermaid](https://mermaid.js.org/). Il s'affiche directement sur GitHub, dans VS Code (extension Markdown Preview Mermaid) et dans la plupart des visionneuses Markdown. Les tours 2 et 3 reprennent le schéma du tour 1.
 
 ```mermaid
 flowchart TD
-    START([Démarrage]) --> FETCH
+    FETCH["<b>fetch</b><br/>issue la plus ancienne, label hermes<br/>langage_detecte"]
+    CODER1["<b>coder_1</b><br/>branche, code, tests, PR"]
+    REVIEW1["<b>review_1</b><br/>approuve + constats"]
+    QA1["<b>qa_1</b><br/>valide + categorie_echec"]
+    BILAN1{"<b>bilan_1</b><br/>ok / retry / escalade"}
+    REJECT1["<b>reject_1</b><br/>commentaire de renvoi sur la PR"]
+    CODER2["<b>coder_2</b><br/>corrige sur la même branche"]
+    R2["review_2, qa_2, bilan_2, reject_2<br/>même schéma que le tour 1"]
+    CODER3["<b>coder_3</b><br/>corrige sur la même branche"]
+    R3["review_3, qa_3, bilan_3<br/>dernier tour : retry devient escalade"]
+    STATUT{"<b>statut</b><br/>aucune_issue / pret / escalade"}
+    WAIT["<b>wait_merge</b><br/>attente de fusion humaine"]
+    ESCQ["<b>escalation_qualite</b><br/>PR en brouillon, labels, Telegram"]
+    ESCM["<b>escalation_merge</b><br/>PR non fusionnée, même traitement"]
+    TELE["<b>telegram_notification</b><br/>curl sendMessage, on_fail: skip"]
+    ARCH["<b>archive</b><br/>vérifie la fermeture de l'issue"]
+    END0([Fin sans issue])
+    END1([Fin])
 
-    FETCH["<b>fetch_issue_node</b><br/>agent<br/>gh issue list, extraction ID / titre / corps / labels,<br/>détection de {{langage_detecte}}"]
-    CODER["<b>coder_node</b><br/>agent<br/>prompt selon le langage<br/>branche, code, build, gh pr create"]
-    REVIEW["<b>review_node</b><br/>agent<br/>prompt reviewer selon le langage<br/>gh pr diff, rapport d'audit"]
-    RGATE{"<b>review_gate</b><br/>gate<br/>approuve ?"}
-    REJECT["<b>github_reject_node</b><br/>agent<br/>gh pr comment avec les motifs du refus"]
-    APPROVE["<b>github_approve_node</b><br/>agent<br/>commentaire d'approbation sur la PR"]
-    QA["<b>qa_node</b><br/>agent<br/>tests selon le langage, capture du code retour"]
-    QGATE{"<b>qa_gate</b><br/>gate<br/>exit 0 ?"}
-    TELEGRAM["<b>telegram_notification_node</b><br/>agent<br/>message curl vers Telegram"]
-    ARCHIVE["<b>archive_join</b><br/>join<br/>gh issue close, ticket vers Done, archivage de la session"]
-    END([Fin])
-
-    FETCH --> CODER
-    CODER -. "next absent dans le JSON" .-> REVIEW
-    REVIEW --> RGATE
-    RGATE -- "true" --> APPROVE
-    RGATE -- "false" --> REJECT
-    APPROVE --> QA
-    QA --> QGATE
-    QGATE -- "true" --> TELEGRAM
-    QGATE -- "false" --> REJECT
-    REJECT -- "nouvelle itération" --> CODER
-    TELEGRAM --> ARCHIVE
-    ARCHIVE --> END
+    FETCH -->|"issue_trouvee == true"| CODER1
+    FETCH -->|"issue_trouvee == false"| STATUT
+    CODER1 --> REVIEW1
+    REVIEW1 -->|"approuve == true"| QA1
+    REVIEW1 --> BILAN1
+    QA1 --> BILAN1
+    BILAN1 -->|"retry"| REJECT1
+    REJECT1 --> CODER2
+    CODER2 --> R2
+    R2 -->|"retry"| CODER3
+    CODER3 --> R3
+    BILAN1 -->|"ok ou escalade"| STATUT
+    R2 -->|"ok ou escalade"| STATUT
+    R3 --> STATUT
+    STATUT -->|"aucune_issue"| END0
+    STATUT -->|"pret"| WAIT
+    STATUT -->|"escalade"| ESCQ
+    WAIT -->|"fusionnee == true"| TELE
+    WAIT -->|"fusionnee == false"| ESCM
+    TELE --> ARCH
+    ARCH --> END1
+    ESCQ --> END1
+    ESCM --> END1
 
     classDef agent fill:#e8f1ff,stroke:#3b6fd4,color:#111
-    classDef gate fill:#fff4d6,stroke:#c28a00,color:#111
-    classDef join fill:#e6f7ea,stroke:#2f8f4e,color:#111
+    classDef decision fill:#fff4d6,stroke:#c28a00,color:#111
     classDef warn fill:#ffe3e3,stroke:#c0392b,color:#111
-    class FETCH,CODER,REVIEW,REJECT,APPROVE,QA,TELEGRAM agent
-    class RGATE,QGATE gate
-    class ARCHIVE join
-    class REJECT warn
+    classDef ok fill:#e6f7ea,stroke:#2f8f4e,color:#111
+    class FETCH,CODER1,REVIEW1,QA1,REJECT1,CODER2,R2,CODER3,R3,WAIT,TELE agent
+    class BILAN1,STATUT decision
+    class ESCQ,ESCM warn
+    class ARCH ok
 ```
 
-Légende : bleu = agent, jaune = gate (décision), vert = join (fin de flux), rouge = nœud de rejet qui alimente la boucle de correction. La flèche en pointillé de `coder_node` vers `review_node` indique une transition **implicite** : elle n'est pas déclarée dans le JSON (voir section 5).
+Légende : bleu = agent, jaune = nœud de décision (`bilan_*`, `statut`), rouge = escalade vers un humain, vert = finalisation.
 
 ## 3. Description des nœuds
 
-| Nœud | Type | Rôle | Sortie vers |
-|---|---|---|---|
-| `fetch_issue_node` | agent | Exécute `gh issue list --limit 1`, extrait l'ID, le titre, le corps et les labels, puis définit `{{langage_detecte}}` d'après les labels (sinon d'après le corps de l'issue). | `coder_node` |
-| `coder_node` | agent | Charge le prompt Coder du langage, crée la branche `hermes-fix-{{issue_id}}`, modifie le code via `fs`, compile localement et ouvre la PR avec `gh pr create`. | *(aucune transition déclarée)* |
-| `review_node` | agent | Charge le prompt Reviewer du langage, analyse le diff via `gh pr diff` et rédige un rapport d'audit technique. | `review_gate` |
-| `review_gate` | gate | Décide d'après le rapport. Renvoie un JSON avec `approuve: true/false`. | `true` → `github_approve_node`, `false` → `github_reject_node` |
-| `github_reject_node` | agent | Poste les motifs du refus sur la PR via `gh pr comment`, en soulignant les manquements aux conventions du langage. | `coder_node` |
-| `github_approve_node` | agent | Poste sur GitHub un commentaire d'approbation détaillant la conformité du code. | `qa_node` |
-| `qa_node` | agent | Détermine l'environnement du langage, lance les tests via `bash` (`pytest`, `npm test`, `cargo test`…) et capture le code retour `$?`. | `qa_gate` |
-| `qa_gate` | gate | Analyse le rapport d'exécution : `valide: true` si le code retour vaut 0, sinon `false`. | `true` → `telegram_notification_node`, `false` → `github_reject_node` |
-| `telegram_notification_node` | agent | Formate un message `curl` pour notifier Telegram que l'issue est résolue, validée et fusionnée. | `archive_join` |
-| `archive_join` | join | Ferme l'issue (`gh issue close`), déplace le ticket vers « Done » et archive la session. | fin (`next: null`) |
+Tous les nœuds sont de type `agent`. La colonne « Condition » reprend le champ `when`.
 
-## 4. Variables et boucles
+### Récupération
 
-- **`{{langage_detecte}}`** : définie par `fetch_issue_node`, lue par `coder_node`, `review_node`, `github_reject_node`, `github_approve_node`, `qa_node` et `telegram_notification_node`.
-- **`{{issue_id}}`** : extraite par `fetch_issue_node`, utilisée pour le nom de branche, le message Telegram et la fermeture de l'issue.
-- **Boucle de correction** : `coder_node → review_node → review_gate → github_reject_node → coder_node`.
-- **Boucle QA** : `qa_gate → github_reject_node → coder_node`, puis une nouvelle revue complète.
-- Le workflow traite **une seule issue** par exécution. Malgré le nom « boucle », aucune transition ne retourne à `fetch_issue_node`.
+| Nœud | Forme | Rôle | Condition | Sortie (`schema`) |
+|---|---|---|---|---|
+| `fetch` | `build` | Exécute `gh issue list --state open --label hermes --search "sort:created-asc -label:hermes-en-cours -label:hermes-escalade" --limit 1`. Sans issue, renvoie `issue_trouvee: false`. Sinon ajoute le label `hermes-en-cours` et détecte le langage. | aucune | `issue_trouvee`, `issue_id`, `issue_titre`, `langage_detecte` (`Java`, `Typescript` ou vide) |
 
-## 5. Points d'attention constatés
+Détection du langage : d'après les labels, sans tenir compte de la casse (`javascript`, `js` et `ts` donnent `Typescript`) ; sinon d'après le corps de l'issue ; sinon `Typescript` par défaut.
+
+### Tours de correction (répétés 3 fois)
+
+| Nœud | Tour 1 | Tour 2 | Tour 3 | Rôle |
+|---|---|---|---|---|
+| Coder | `coder_1` | `coder_2` | `coder_3` | Tour 1 : crée la branche `hermes-fix-issue-<issue_id>`, code, valide localement (build et tests) et ouvre la PR avec `Closes #<issue_id>`. Tours 2 et 3 : reprennent la même branche et la même PR, relisent `gh pr view <pr_number> --comments` et le bilan précédent, ne corrigent que les points signalés. |
+| Review | `review_1` | `review_2` | `review_3` | Applique le prompt Reviewer (`gh pr diff`, fichiers, état de la CI). Aux tours 2 et 3, vérifie d'abord que les constats précédents sont corrigés. |
+| QA | `qa_1` | `qa_2` | `qa_3` | Poste un commentaire de passage en QA, puis applique `agent-qa-system-prompt.md` (Maven ou Gradle pour Java, npm, pnpm ou yarn pour TypeScript/JS). |
+| Bilan | `bilan_1` | `bilan_2` | `bilan_3` | Synthétise le tour et décide de la suite. |
+| Rejet | `reject_1` | `reject_2` | aucun | Poste sur la PR les motifs du renvoi au Coder. |
+
+Sorties :
+
+- Coder : `pr_number`, `branche`.
+- Review : `approuve` (true uniquement si le rapport est `APPROVED`), `constats` (constats BLOQUANT et MAJEUR).
+- QA : `valide`, `categorie_echec`, `details`.
+- Bilan : `statut` (`ok`, `retry`, `escalade`), `detail`.
+- Rejet : `poste`.
+
+Conditions d'exécution :
+
+| Nœud | `when` | Remarque |
+|---|---|---|
+| `coder_1` | `out.fetch.issue_trouvee == True` | |
+| `qa_1`, `qa_2`, `qa_3` | `out.review_N.approuve == True` | `on_skip: prune` : sans approbation, la QA est élaguée. |
+| `reject_1`, `coder_2` | `out.bilan_1.statut == 'retry'` | |
+| `reject_2`, `coder_3` | `out.bilan_2.statut == 'retry'` | |
+
+Les nœuds `bilan_*` dépendent de `review_N` et `qa_N`, avec `order_only: ["qa_N"]` : ils attendent la QA sans que sa sortie bloque le bilan si elle a été élaguée.
+
+### Règles de décision des bilans
+
+1. `review_N.approuve == false` : `retry`.
+2. Sinon, `qa_N.valide == true` : `ok`.
+3. Sinon, selon `categorie_echec` :
+   - `ENVIRONMENT_ERROR`, `TIMEOUT`, `WORKSPACE_MODIFIE`, `UNSUPPORTED_LANGUAGE` : `escalade` (un humain doit intervenir) ;
+   - `BUILD_ERROR`, `TEST_FAILURE`, `LINT_ERROR`, `NO_TESTS_FOUND` : `retry`.
+4. `bilan_3` est le dernier tour autorisé : tout `retry` devient `escalade`.
+
+### Fin de flux
+
+| Nœud | Forme | Rôle | Condition | Sortie |
+|---|---|---|---|---|
+| `statut` | `recon` | Lit le dernier bilan exécuté (`bilan_3`, sinon `bilan_2`, sinon `bilan_1`). `aucune_issue` si `fetch.issue_trouvee` est false, `pret` si le dernier bilan vaut `ok`, `escalade` sinon. `after` et `order_only` couvrent les trois bilans. | aucune | `statut` (`aucune_issue`, `pret`, `escalade`) |
+| `wait_merge` | `publish` | Commente la PR (« prête à être fusionnée »), puis interroge `gh pr view <pr_number> --json state,mergedAt`. Aucun agent ne fusionne. | `out.statut.statut == 'pret'` | `fusionnee` |
+| `escalation_qualite` | agent | Remet la PR en brouillon (`gh pr ready --undo`), poste un récapitulatif, remplace le label `hermes-en-cours` par `hermes-escalade`, notifie Telegram. Ne fusionne rien, ne ferme pas l'issue. | `out.statut.statut == 'escalade'` | aucune |
+| `escalation_merge` | agent | Même traitement que `escalation_qualite`, quand la PR est fermée sans fusion ou que le délai est dépassé. | `out.wait_merge.fusionnee == False` | aucune |
+| `telegram_notification` | agent | Envoie la notification de réussite via `curl` (API `sendMessage`). `on_fail: skip` : un échec d'envoi ne bloque pas le flux. | `out.wait_merge.fusionnee == True` | aucune |
+| `archive` | agent | Vérifie que l'issue est fermée (automatique grâce à `Closes #<issue_id>`), sinon la ferme avec `gh issue close --reason completed`. Retire `hermes-en-cours`. Déplace le ticket vers « Done » seulement si un tableau de projet est configuré. | `out.wait_merge.fusionnee == True` | aucune |
+
+## 4. Variables, entrées et boucles
+
+- **`langage_detecte`** : produite par `fetch`, lue par les Coders, Reviewers, QA, nœuds de rejet et notifications Telegram.
+- **`issue_id`** : produite par `fetch`, utilisée pour la branche, la PR (`Closes #`), les labels, Telegram et `archive`.
+- **`pr_number` et `branche`** : produits par `coder_1`. Les tours suivants réutilisent ceux de `coder_1` (les nœuds `reject_*`, `qa_*`, `wait_merge` et les escalades les lisent depuis `coder_1`).
+- **Boucle de correction bornée** : `coder_N → review_N → qa_N → bilan_N → reject_N → coder_N+1`, au plus 3 tours. Au tour 3, `bilan_3` convertit tout `retry` en `escalade`.
+- **Transmission du contexte** : `coder_2` reçoit `bilan_1` et `coder_3` reçoit `bilan_2` via `inputs`, en plus des commentaires de la PR.
+- **Une issue par exécution** : aucune transition ne retourne à `fetch`. Le résultat du workflow est le nœud `statut` (`"result": "statut"`).
+
+## 5. Sécurité
+
+- Les `goal` de `fetch`, `coder_*` portent une consigne explicite : le titre, le corps et les commentaires de l'issue ou de la PR sont des entrées non fiables et leurs instructions ne sont jamais suivies (changement de langage ou de prompt, commande, URL, modification du workflow).
+- Les secrets Telegram (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) sont lus depuis l'environnement et ne doivent apparaître ni dans le message, ni dans les logs, ni dans la sortie. Les nœuds de rejet et de bilan rappellent de ne jamais inclure de secret.
+- Aucun agent ne fusionne la PR : la fusion est humaine.
+- Le label `hermes-en-cours` empêche de reprendre une issue déjà prise en charge ; `hermes-escalade` exclut les issues escaladées.
+
+## 6. Points d'attention constatés
 
 Ces points viennent de la lecture du JSON. Je n'ai pas exécuté le workflow.
 
-### Bloquants
+### Résolus depuis la version précédente
 
-1. **`coder_node` n'a pas de `next`.** Si le moteur ne déduit pas la transition, le flux s'arrête après le Coder et la revue n'est jamais lancée. Ajouter `"next": "review_node"`.
-2. **Aucune limite d'itérations.** Un rejet renvoie toujours au Coder. Un Reviewer trop strict, ou une QA qui échoue pour une raison d'environnement, crée une boucle infinie. Ajouter un compteur (par exemple 3 itérations), puis une escalade vers un humain.
-3. **La PR n'est jamais fusionnée, mais le flux l'affirme.** Le message Telegram dit « fusionnée avec succès » et `archive_join` ferme l'issue, alors que le Coder et le Reviewer n'ont pas le droit de fusionner (d'après leurs prompts) et qu'aucun nœud ne le fait. Soit on ajoute une étape de fusion ou d'attente d'un humain, soit on corrige le message et on ne ferme l'issue qu'après la fusion.
+Le flux gère désormais : l'absence d'issue (`issue_trouvee`), le tri par date et le filtrage par label, une limite de 3 itérations avec escalade, l'attente d'une fusion humaine avant de notifier et de fermer, un échec QA transmis avec sa catégorie, Java dans la QA, l'alignement du nom de branche (`hermes-fix-issue-<issue_id>`), un `goal` de review limité au JSON, et la sortie JSON du langage normalisée.
 
-### Importants
+Corrigés dans le JSON : `timeout` de `wait_merge` porté à 172800000 ms (48 h), `bilan_1`/`coder_2` et `bilan_2`/`coder_3` ajoutés aux `inputs` de `review_2` et `review_3`, `inputs: ["fetch"]` ajouté à `coder_1`, `when` et `on_skip: prune` ajoutés à `review_1` (chaîne sautée sans issue), espace manquant corrigé dans le `goal` de `coder_1`.
 
-4. **`gh issue list --limit 1` ne renvoie pas « la plus ancienne ».** Par défaut la liste est triée de la plus récente à la plus ancienne. De plus rien ne filtre l'état (`--state open`), un label dédié (par exemple `hermes`), ni les issues déjà traitées. Utiliser par exemple `--search "sort:created-asc"` avec un label.
-5. **Le cas « aucune issue » n'est pas géré.** Si la liste est vide, le flux devrait se terminer proprement.
-6. **Le `goal` de `coder_node` est écrit pour Java** (« patterns Java modernes »), même quand le langage est TypeScript. Il doit être générique, ou déléguer entièrement au prompt système.
-7. **Nom de branche incohérent.** Le workflow dit `hermes-fix-{{issue_id}}`, les prompts du Coder disent `hermes-fix-issue-<issue_id>`. Aligner les deux.
-8. **Le `goal` de `review_node` contredit le prompt Reviewer.** Il demande un « rapport d'audit technique argumenté » en texte et mentionne Python et Rust, alors que le prompt impose une réponse JSON stricte pour la Gate. Le `goal` doit se limiter à « applique le prompt système et renvoie uniquement le JSON ».
-9. **Le retour au Coder ne transmet pas le contexte.** `github_reject_node` poste un commentaire, mais `coder_node` n'est pas informé qu'il doit relire les commentaires de la PR, réutiliser la branche existante et ne pas ouvrir une seconde PR. À préciser dans le `goal`.
-10. **Un échec QA passe par `github_reject_node`**, dont le `goal` parle des « manquements aux conventions du langage » : il ne décrit pas un échec de tests. Il faut lui transmettre la sortie de la QA, ou créer un nœud de rejet dédié.
-11. **`qa_node` ne prévoit pas Java** (ni Maven ni Gradle), alors que Java est un langage principal. Ajouter `mvn test` / `./gradlew test`. Le Reviewer ne lance pas les tests : cette étape est la seule exécution réelle des tests.
+### À vérifier
 
-### À surveiller
-
-12. **Injection de prompt.** `fetch_issue_node` déduit le langage du corps de l'issue, et le contenu de l'issue est ensuite lu par le Coder. Le corps d'une issue est une entrée non fiable : il ne doit pas pouvoir modifier le workflow (langage, prompts, commandes).
-13. **Détection du langage fragile.** Les comparaisons `== 'Java'` et `== 'Typescript'` sont sensibles à la casse et à la forme du label (`java`, `typescript`, `ts`). Prévoir une normalisation et un comportement explicite pour un langage inconnu ou une issue multi-langages.
-14. **Secrets Telegram.** Le jeton du bot et l'identifiant du chat ne doivent pas apparaître dans le JSON ni dans les logs : les passer par des variables d'environnement ou un coffre de secrets. Le `\'` dans la chaîne du message est aussi à vérifier selon le moteur.
-15. **`archive_join` n'a qu'une entrée.** Un `join` sert normalement à fusionner plusieurs branches. Ici c'est un simple nœud final, et « déplacer le ticket vers Done » n'a pas d'outil ou de commande précisé.
-16. **Les prompts Python et Rust sont cités mais n'existent pas.** Les `goal` de `review_node` et `qa_node` les mentionnent. Soit on crée ces prompts, soit on retire ces références pour ne pas induire l'agent en erreur.
-17. **Fichiers de prompts non versionnés.** Le dossier `hermes-workflow/` n'est pas encore suivi par git.
-
-## 6. Version corrigée du flux (proposition)
-
-```mermaid
-flowchart TD
-    FETCH["fetch_issue_node<br/>issue ouverte, label hermes, tri par date"] -->|"aucune issue"| END0([Fin])
-    FETCH -->|"issue trouvée"| CODER
-    CODER["coder_node<br/>branche, code, tests, PR<br/>relit les commentaires si itération > 1"] --> REVIEW
-    REVIEW["review_node<br/>JSON strict"] --> RGATE{"review_gate"}
-    RGATE -->|"approuve"| QA["qa_node<br/>mvn / gradle / npm test"]
-    RGATE -->|"rejet"| CNT{"itérations < 3 ?"}
-    QA --> QGATE{"qa_gate"}
-    QGATE -->|"valide"| HUMAN["attente de fusion<br/>par un humain"]
-    QGATE -->|"échec"| CNT
-    CNT -->|"oui"| REJECT["github_reject_node<br/>motifs de la review ou sortie des tests"]
-    CNT -->|"non"| ESC["escalade humaine<br/>PR en draft + notification"]
-    REJECT --> CODER
-    HUMAN -->|"PR fusionnée"| NOTIF["telegram_notification_node"]
-    NOTIF --> ARCHIVE["archive<br/>fermeture de l'issue"]
-    ARCHIVE --> END1([Fin])
-    ESC --> END2([Fin])
-```
-
-Les changements par rapport au flux actuel : arrêt propre sans issue, compteur d'itérations avec escalade, QA lancée sur le code approuvé avec les bons outils par langage, attente d'une fusion réelle avant la notification et la fermeture de l'issue.
+1. **`qa_2` et `qa_3` lisent `pr_number` depuis `coder_1`**, ce qui est correct tant que la PR reste la même, mais ne passe pas par la sortie de `coder_2` / `coder_3`.
+2. **`escalation_qualite` et `escalation_merge` ont un `goal` identique** (dupliqué). Le cas « PR inexistante » (sans issue) n'est pas distingué dans `escalation_qualite`.
+3. **Le tour 3 n'a pas de nœud `reject_3`**, c'est voulu : `bilan_3` ne peut rendre que `ok` ou `escalade`.
+4. **Apostrophes dans les messages Telegram** (`L'issue`) : les messages sont écrits entre apostrophes simples dans le `goal`. Vérifier l'échappement lors de la construction de la commande `curl`.
+5. **Détection du langage limitée à deux valeurs.** Une issue multi-langages ou dans un autre langage tombe sur `Typescript` par défaut ; le schéma accepte aussi la valeur vide, traitée comme `Typescript` par les Coders et Reviewers.
+6. **Prompts Python et Rust** : plus cités dans le JSON, ils n'existent toujours pas. `qa_*` reste limité à Java et TypeScript/JS (`UNSUPPORTED_LANGUAGE` pour le reste).
+7. **« Déplacer le ticket vers Done »** dans `archive` reste sans outil précis : conditionné à la présence d'un tableau de projet GitHub.

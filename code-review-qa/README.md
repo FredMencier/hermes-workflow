@@ -21,9 +21,9 @@ Les prompts système sont chargés selon `langage_detecte` :
 
 | Langage | Prompt Coder | Prompt Reviewer | Prompt QA |
 |---|---|---|---|
-| `Java` | `java-agent-coder-system-prompt.md` | `java-agent-reviewer-system-prompt.md` | `agent-qa-system-prompt.md` |
-| `Typescript` | `typescript-agent-coder-system-prompt.md` | `typescript-agent-reviewer-system-prompt.md` | `agent-qa-system-prompt.md` |
-| Autre ou vide | prompt TypeScript Senior (par défaut) | prompt TypeScript Senior (par défaut) | `agent-qa-system-prompt.md` |
+| `Java` | `../profiles/coder/java-agent-coder-system-prompt.md` | `../profiles/coder/java-agent-reviewer-system-prompt.md` | `../profiles/qa/SOUL.md` |
+| `Typescript` | `../profiles/reviewer/typescript-agent-coder-system-prompt.md` | `../profiles/reviewer/typescript-agent-reviewer-system-prompt.md` | `../profiles/qa/SOUL.md` |
+| Autre ou vide | prompt TypeScript Senior (par défaut) | prompt TypeScript Senior (par défaut) | `../profiles/qa/SOUL.md` |
 
 ## 2. Diagramme
 
@@ -104,7 +104,7 @@ Détection du langage : d'après les labels, sans tenir compte de la casse (`jav
 |---|---|---|---|---|
 | Coder | `coder_1` | `coder_2` | `coder_3` | Tour 1 : crée la branche `hermes-fix-issue-<issue_id>`, code, valide localement (build et tests) et ouvre la PR avec `Closes #<issue_id>`. Tours 2 et 3 : reprennent la même branche et la même PR, relisent `gh pr view <pr_number> --comments` et le bilan précédent, ne corrigent que les points signalés. |
 | Review | `review_1` | `review_2` | `review_3` | Applique le prompt Reviewer (`gh pr diff`, fichiers, état de la CI). Aux tours 2 et 3, vérifie d'abord que les constats précédents sont corrigés. |
-| QA | `qa_1` | `qa_2` | `qa_3` | Poste un commentaire de passage en QA, puis applique `agent-qa-system-prompt.md` (Maven ou Gradle pour Java, npm, pnpm ou yarn pour TypeScript/JS). |
+| QA | `qa_1` | `qa_2` | `qa_3` | Poste un commentaire de passage en QA, puis applique `../profiles/qa/SOUL.md` (Maven ou Gradle pour Java, npm, pnpm ou yarn pour TypeScript/JS). |
 | Bilan | `bilan_1` | `bilan_2` | `bilan_3` | Synthétise le tour et décide de la suite. |
 | Rejet | `reject_1` | `reject_2` | aucun | Poste sur la PR les motifs du renvoi au Coder. |
 

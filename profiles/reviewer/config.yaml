@@ -1,0 +1,10 @@
+# Configuration du modèle spécialisé dans le code
+# hermes chat -p coder
+model:
+  provider: "kilo"
+  default: "openai/gpt-6-luna-pro"
+
+# Les outils (toolsets) sont activés globalement ou par set
+enabled_toolsets:
+  - "filesystem"                  # Active read, write, patch, list_dir
+  - "terminal"                    # Active execute_command

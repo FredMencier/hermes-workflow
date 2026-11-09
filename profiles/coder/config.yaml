@@ -1,1 +1,5 @@
-
+# Profil Hermes "coder" — Résout l'issue, code et ouvre la PR
+# Pour changer de LLM, modifier uniquement model.default (et provider si besoin).
+model:
+  default: claude-opus-5-5
+  provider: anthropic
